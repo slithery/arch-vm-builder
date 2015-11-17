@@ -62,6 +62,13 @@ IMG_DIR=/mnt/data/vms
 VM_RAM=1G
 VM_HD_SIZE=8G
 VM_IMG="$IMG_DIR"/"$VM_NAME".raw
+PKG_INSTALL="git haveged openssh syslinux vim"
+PKG_IGNORE="cryptsetup device-mapper dhcpcd iproute2 jfsutils libaio libusb linux linux-firmware lvm2 man-db man-pages mdadm mkinitcpio mkinitcpio-busybox nano netctl openresolv pciutils pcmciautils reiserfsprogs s-nail systemd-sysvcompat thin-provisioning-tools usbutils vi xfsprogs"
+SERVICES_ENABLED="haveged sshd"
+
+# Run checks
+#
+
 
 # Create image
 #
@@ -69,16 +76,21 @@ qemu-img create -f raw "$VM_IMG" "$VM_HD_SIZE"
 
 # Partition image
 #
-
+sgdisk -n 1:0:-1G \
+       -c 1:”$VM_NAME”-root \
+       -n 2:0:0 \
+       -t 2:8200 \
+       -c 2:”$VM_NAME”-swap \
+       “$VM_IMG”
 
 # Loop mount image
 #
-
+sudo losetup -f -P “$VM_IMG”
 
 # Create filesystems
 #
-mkfs.ext4 -L "$VM_NAME"-root /dev/loop0p1
-mkswap -L "$VM_NAME"-swap /dev/loop0p2
+sudo mkfs.ext4 -L "$VM_NAME"-root /dev/loop0p1
+sudo mkswap -L "$VM_NAME"-swap /dev/loop0p2
 
 # Mount root
 #
