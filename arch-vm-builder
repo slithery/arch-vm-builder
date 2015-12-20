@@ -53,8 +53,6 @@ fi
 
 # Main script
 #
-echo "Main script here"
-echo VM_NAME="$VM_NAME"
 
 # Set variables
 #
@@ -62,45 +60,131 @@ IMG_DIR=/mnt/data/vms
 VM_RAM=1G
 VM_HD_SIZE=8G
 VM_IMG="$IMG_DIR"/"$VM_NAME".raw
+VM_MOUNT=/mnt/"$VM_NAME"-root
 PKG_INSTALL="git haveged openssh syslinux vim"
 PKG_IGNORE="cryptsetup device-mapper dhcpcd iproute2 jfsutils libaio libusb linux linux-firmware lvm2 man-db man-pages mdadm mkinitcpio mkinitcpio-busybox nano netctl openresolv pciutils pcmciautils reiserfsprogs s-nail systemd-sysvcompat thin-provisioning-tools usbutils vi xfsprogs"
 SERVICES_ENABLED="haveged sshd"
+PACKAGES=$(comm -3 <(pacman -Qqg base | sort) <(echo "$PKG_IGNORE" | sed -e 's/\s\+/\n/g'))
 
 # Run checks
 #
-
+echo "Running checks..."
+[[ -f "$VM_IMG" ]] && echo "Image file already exists, quitting..." && exit 1
+echo "   done."
 
 # Create image
 #
-qemu-img create -f raw "$VM_IMG" "$VM_HD_SIZE"
+echo "Creating VM image file..."
+qemu-img create -f raw "$VM_IMG" "$VM_HD_SIZE" > /dev/null 2>&1
 
 # Partition image
 #
 sgdisk -n 1:0:-1G \
-       -c 1:”$VM_NAME”-root \
+       -c 1:"$VM_NAME"-root \
+       -A 1:set:2 \
        -n 2:0:0 \
        -t 2:8200 \
-       -c 2:”$VM_NAME”-swap \
-       “$VM_IMG”
+       -c 2:"$VM_NAME"-swap \
+       "$VM_IMG" > /dev/null 2>&1
+
+# Install MBR
+#
+dd bs=440 conv=notrunc count=1 if=/usr/lib/syslinux/bios/gptmbr.bin of="$VM_IMG" > /dev/null 2>&1
 
 # Loop mount image
 #
-sudo losetup -f -P “$VM_IMG”
+LOOP=$(losetup -f)
+sudo losetup -P "$LOOP" "$VM_IMG"
 
 # Create filesystems
 #
-sudo mkfs.ext4 -L "$VM_NAME"-root /dev/loop0p1
-sudo mkswap -L "$VM_NAME"-swap /dev/loop0p2
+sudo mkfs.ext4 -L "$VM_NAME"-root "$LOOP"p1 > /dev/null 2>&1
+sudo mkswap -L "$VM_NAME"-swap "$LOOP"p2 > /dev/null 2>&1
 
 # Mount root
 #
-sudo mkdir -p /mnt/"$VM_NAME"-root
-sudo mount /dev/loop0p1 /mnt/"$VM_NAME"-root
+sudo mkdir -p "$VM_MOUNT"
+sudo mount "$LOOP"p1 "$VM_MOUNT"
+echo "   done."
 
 # Pacstrap
 #
-sudo pacstrap -c -d /mnt/"$VM_NAME"-root base
+echo "Pacstrapping arch linux..."
+sudo pacstrap -c -d "$VM_MOUNT" base syslinux > /dev/null 2>&1
+echo "   done."
+
+# Write fstab
+#
+echo "Writing fstab..."
+sudo tee -a "$VM_MOUNT"/etc/fstab <<EOF > /dev/null
+LABEL=$VM_NAME-root   /       ext4    defaults    0  1
+LABEL=$VM_NAME-swap   none    swap    defaults    0  0
+EOF
+echo "   done."
+
+# Write hostname
+#
+echo "Writing hostname..."
+echo "$VM_NAME" | sudo tee "$VM_MOUNT"/etc/hostname > /dev/null
+echo "   done."
+
+# Set timezone
+#
+echo "Setting timezone..."
+sudo ln -s /usr/share/zoneinfo/Europe/London "$VM_MOUNT"/etc/localtime
+echo "   done."
 
 
-exit 0
 
+
+
+
+
+
+sudo sed -i '/^#en_GB.UTF-8/s/^#//' "$VM_MOUNT"/etc/locale.gen
+sudo sed -i '/^#en_US.UTF-8/s/^#//' "$VM_MOUNT"/etc/locale.gen
+
+echo "LANG=en_GB.UTF-8" | sudo tee "$VM_MOUNT"/etc/locale.conf
+
+echo -e "KEYMAP=uk\nFONT=lat2-16" | sudo tee "$VM_MOUNT"/etc/vconsole.conf
+
+echo -e "virtio virtio_blk virtio_pci virtio_net" | sudo tee "$VM_MOUNT"/etc/modules-load.d/virtio.conf
+
+# Install bootloader
+#
+echo "Installing bootloader..."
+sudo arch-chroot "$VM_MOUNT" /bin/syslinux-install_update -i -a -m
+sudo mkdir -p "$VM_MOUNT"/boot/syslinux
+sudo tee -a "$VM_MOUNT"/boot/syslinux/syslinux.cfg <<EOF > /dev/null
+PROMPT 0
+TIMEOUT 5
+DEFAULT arch
+
+LABEL arch
+         LINUX ../vmlinuz-linux
+         APPEND root=/dev/vda1 rw
+         INITRD ../initramfs-linux.img
+
+LABEL archfallback
+         LINUX ../vmlinuz-linux
+         APPEND root=/dev/vda1 rw
+         INITRD ../initramfs-linux-fallback.img
+EOF
+echo "   done."
+
+
+
+sudo arch-chroot "$VM_MOUNT" /bin/locale-gen
+
+# Generate initramfs
+#
+echo "Generating initramfs..."
+sudo arch-chroot "$VM_MOUNT" /bin/mkinitcpio -p linux > /dev/null 2>&1
+echo "   done."
+
+
+# Clean up
+echo "Cleaning up..."
+sudo umount "$VM_MOUNT"
+sudo losetup -d "$LOOP"
+echo "   done."
